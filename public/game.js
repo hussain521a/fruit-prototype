@@ -1,6 +1,10 @@
 console.log("Game loaded");
 
 const socket = io();
+const roomId = prompt("Enter room code for this game:");
+
+//join room as host (to listen)
+socket.emit("joinRoom", { roomId, role: "host" });
 
 const config = {
   type: Phaser.AUTO,

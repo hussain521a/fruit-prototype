@@ -6,19 +6,38 @@
         <title>Controller</title>
         <script src="/socket.io/socket.io.js"></script>
     </head>
-
     <body>
 
-        <button onclick="move(0,-5)">UP</button>
-        <button onclick="move(0,5)">DOWN</button>
-        <button onclick="move(-5,0)">LEFT</button>
-        <button onclick="move(5,0)">RIGHT</button>
+        <h3>Join Room</h3>
+        <input type="text" id="roomInput" placeholder="Room code">
+        <button onclick="joinRoom()">Join</button>
+
+        <div id="controls" style="display:none;">
+            <button onclick="move(0,-5)">UP</button>
+            <button onclick="move(0,5)">DOWN</button>
+            <button onclick="move(-5,0)">LEFT</button>
+            <button onclick="move(5,0)">RIGHT</button>
+        </div>
 
         <script>
             const socket = io();
+            let roomId;
+
+            function joinRoom(){
+                roomId = document.getElementById("roomInput").value;
+                if(!roomId) return alert("Enter a room code");
+
+                // For now, the first device to join as thief
+                const role = "thief"; 
+
+                socket.emit("joinRoom",{roomId, role});
+
+                document.getElementById("controls").style.display = "block";
+            }
 
             function move(x,y){
-            socket.emit("move",{x:x,y:y});
+            if(!roomId) return;
+                socket.emit("move",{roomId, x, y});
             }
         </script>
 
