@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Controller</title>
+        <script src="/socket.io/socket.io.js"></script>
+    </head>
+
+    <body>
+
+        <button onclick="move(0,-5)">UP</button>
+        <button onclick="move(0,5)">DOWN</button>
+        <button onclick="move(-5,0)">LEFT</button>
+        <button onclick="move(5,0)">RIGHT</button>
+
+        <script>
+            const socket = io();
+
+            function move(x,y){
+            socket.emit("move",{x:x,y:y});
+            }
+        </script>
+
+    </body>
+</html>
