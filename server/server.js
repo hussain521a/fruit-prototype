@@ -17,7 +17,7 @@ io.on("connection", (socket) => {
 	console.log("user connected:", socket.id);
 
 	// Join a room
-	socket.on("joinRoom", ({ roomId }) => {
+	socket.on("joinRoom", ({ roomId , role }) => {
 		socket.join(roomId);
 
 		// Create room if it doesn't exist
@@ -28,24 +28,33 @@ io.on("connection", (socket) => {
 		};
 		}
 
-		// Assign role
-		let role;
-		if (!rooms[roomId].thiefSocket) {
-			rooms[roomId].thiefSocket = socket.id;
-			role = "thief";
+		//Assigning roles
+		const room = rooms[roomId];
+		//HOST
+		if (role === "host") {
+			console.log(`Host joined room ${roomId}`);
+			socket.emit("assignRole", "host");
+			socket.emit("updateThief", room.thief);
+			return;
+	  	}
+
+		// CONTROLLER
+  		let assignedRole;
+		if (!room.thiefSocket) {
+			room.thiefSocket = socket.id;
+			assignedRole = "thief";
 			console.log(`Thief joined room ${roomId}`);
-		} 
-		else {
-			role = "player";
-			rooms[roomId].players.push(socket.id);
+		} else {
+			assignedRole = "player";
+			room.players.push(socket.id);
 			console.log(`Player joined room ${roomId}`);
 		}
 
 		//Sends role to requester
-		socket.emit("assignRole", role);
+		socket.emit("assignRole", assignedRole);
 
 		// Send initial thief position
-		socket.emit("updateThief", rooms[roomId].thief);
+		socket.emit("updateThief", room.thief);
 	});
 
   // Move thief
@@ -73,17 +82,19 @@ io.on("connection", (socket) => {
 
   // Handle disconnect
 	socket.on("disconnect", () => {
+
+		console.log("user disconnected:", socket.id);
 		for (const roomId in rooms) {
 
-		const room = rooms[roomId];
+			const room = rooms[roomId];
 
-		//If the disconnect is from thief, remove the thief
-		if (room.thiefSocket === socket.id) {
-			room.thiefSocket = null;
-		}
+			//If the disconnect is from thief, remove the thief
+			if (room.thiefSocket === socket.id) {
+				room.thiefSocket = null;
+			}
 
-		//Replaces players with new list by filtering out the id of the one that disconnected
-		room.players = room.players.filter(id => id !== socket.id);
+			//Replaces players with new list by filtering out the id of the one that disconnected
+			room.players = room.players.filter(id => id !== socket.id);
 		}
 	});
 

@@ -51,7 +51,7 @@
                 if(!roomId) return alert("Enter a room code");
 
 
-                socket.emit("joinRoom",{roomId});
+                socket.emit("joinRoom",{roomId, role:"controller"});
 
                 document.getElementById("controls").style.display = "block";
             }
