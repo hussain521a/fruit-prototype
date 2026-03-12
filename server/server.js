@@ -17,7 +17,7 @@ io.on("connection", (socket) => {
 	console.log("user connected:", socket.id);
 
 	// Join a room
-	socket.on("joinRoom", ({ roomId, role }) => {
+	socket.on("joinRoom", ({ roomId }) => {
 		socket.join(roomId);
 
 		// Create room if it doesn't exist
@@ -29,12 +29,16 @@ io.on("connection", (socket) => {
 		}
 
 		// Assign role
-		if (role === "thief") {
-		rooms[roomId].thiefSocket = socket.id;
-		console.log(`Thief joined room ${roomId}`);
-		} else {
-		rooms[roomId].players.push(socket.id);
-		console.log(`Player joined room ${roomId}`);
+		let role;
+		if (!rooms[roomId].thiefSocket) {
+			rooms[roomId].thiefSocket = socket.id;
+			role = "thief";
+			console.log(`Thief joined room ${roomId}`);
+		} 
+		else {
+			role = "player";
+			rooms[roomId].players.push(socket.id);
+			console.log(`Player joined room ${roomId}`);
 		}
 
 		//Sends role to requester
@@ -52,8 +56,16 @@ io.on("connection", (socket) => {
 		//Check to make sure the sender is the thief
 		if (socket.id !== room.thiefSocket) return;
 
+		// Movement Logic
+		const WIDTH = 800;
+		const HEIGHT = 600;
+
 		room.thief.x += x;
 		room.thief.y += y;
+
+		// Boundaries
+		room.thief.x = Math.max(0, Math.min(WIDTH, room.thief.x));
+		room.thief.y = Math.max(0, Math.min(HEIGHT, room.thief.y));
 
 		// Broadcast to everyone in the room
 		io.to(roomId).emit("updateThief", room.thief);

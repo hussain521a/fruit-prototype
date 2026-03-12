@@ -50,10 +50,8 @@
                 roomId = document.getElementById("roomInput").value;
                 if(!roomId) return alert("Enter a room code");
 
-                // For now, the first device to join as thief
-                const role = "thief"; 
 
-                socket.emit("joinRoom",{roomId, role});
+                socket.emit("joinRoom",{roomId});
 
                 document.getElementById("controls").style.display = "block";
             }
