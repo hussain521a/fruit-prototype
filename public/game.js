@@ -7,67 +7,50 @@ const roomId = prompt("Enter room code for this game:");
 socket.emit("joinRoom", { roomId, role: "host" });
 
 // ─── Map config ───────────────────────────────────────────────────────────────
-// Set these to your map image's natural pixel dimensions.
-// The canvas will match exactly — no stretching.
 const MAP_WIDTH  = 1280; // ← set to your map.png width in pixels
 const MAP_HEIGHT = 720;  // ← set to your map.png height in pixels
 
 // ─── Sprite scale ─────────────────────────────────────────────────────────────
-// 1.0 = natural sprite size. Lower = smaller on screen.
-// Adjust this whenever you swap maps or want to tune character size.
-const SPRITE_SCALE = 0.75;
+// 1.0 = natural sprite size. Adjust per map as needed.
+const SPRITE_SCALE = 1.0;
+
+// ─── Thief movement smoothing ─────────────────────────────────────────────────
+// How quickly the thief visually catches up to the server position each frame.
+// 1.0 = instant snap (old behavior). 0.1 = very smooth but laggy.
+// 0.3 is a good starting point — raise it if it feels too delayed.
+const THIEF_LERP = 0.3;
+
+// ─── NPC config ───────────────────────────────────────────────────────────────
+const NPC_COUNT         = 40;
+const NPC_SPEED         = 80;  // movement speed in px/s while walking
+const NPC_IDLE_CHANCE   = 0.002; // probability per frame of stopping (lower = rarer stops)
+const NPC_IDLE_MIN_MS   = 1000;  // minimum time an NPC stays idle (ms)
+const NPC_IDLE_MAX_MS   = 4000;  // maximum time an NPC stays idle (ms)
+const NPC_TURN_CHANCE   = 0.003; // probability per frame of changing direction while walking
 
 // ─── Sprite sheet config ──────────────────────────────────────────────────────
-// Adjust these if the sheet ever changes — they drive all frame math below.
-const FRAME_WIDTH       = 64;  // px width of a single frame
-const FRAME_HEIGHT      = 64;  // px height of a single frame
-const FRAMES_PER_ROW    = 17;  // number of columns in the sheet
-const WALK_ROWS_PER_DIR = 2;   // each direction spans this many consecutive rows
-const WALK_FRAME_RATE   = 12;  // walk animation playback speed (fps)
+const FRAME_WIDTH       = 64;
+const FRAME_HEIGHT      = 64;
+const FRAMES_PER_ROW    = 17;
+const WALK_ROWS_PER_DIR = 2;
+const WALK_FRAME_RATE   = 12;
 
-// NPC movement speed in pixels per second (delta-time based, so framerate-independent)
-const NPC_SPEED = 80; // ← tweak this to change how fast NPCs move
-
-// Derived — no need to touch these
-const WALK_FRAMES_PER_DIR = FRAMES_PER_ROW * WALK_ROWS_PER_DIR; // 34 total walk frames per direction
-const WALK_ROW_COUNT      = 8 * WALK_ROWS_PER_DIR;               // 16 walk rows total
-const IDLE_ROW_START      = WALK_ROW_COUNT * FRAMES_PER_ROW;     // flat index where idle row begins (272)
+// Derived
+const WALK_FRAMES_PER_DIR = FRAMES_PER_ROW * WALK_ROWS_PER_DIR; // 34
+const WALK_ROW_COUNT      = 8 * WALK_ROWS_PER_DIR;               // 16
+const IDLE_ROW_START      = WALK_ROW_COUNT * FRAMES_PER_ROW;     // 272
 
 // ─── Direction orders ─────────────────────────────────────────────────────────
-// Walk rows top → bottom
 const WALK_DIRECTION_ORDER = [
-  "up",
-  "upleft",
-  "upright",
-  "downright",
-  "right",
-  "left",
-  "downleft",
-  "down"
+  "up", "upleft", "upright", "downright", "right", "left", "downleft", "down"
 ];
 
-// Idle row left → right
 const IDLE_DIRECTION_ORDER = [
-  "right",
-  "left",
-  "up",
-  "upleft",
-  "upright",
-  "downright",
-  "downleft",
-  "down"
+  "right", "left", "up", "upleft", "upright", "downright", "downleft", "down"
 ];
 
-// atan2 angle buckets → direction name (clockwise from 0° = right)
 const ANGLE_TO_DIR = [
-  "right",
-  "downright",
-  "down",
-  "downleft",
-  "left",
-  "upleft",
-  "up",
-  "upright"
+  "right", "downright", "down", "downleft", "left", "upleft", "up", "upright"
 ];
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -77,11 +60,7 @@ const config = {
   height: MAP_HEIGHT,
   backgroundColor: "#000000",
   physics: { default: "arcade" },
-  scene: {
-    preload,
-    create,
-    update
-  }
+  scene: { preload, create, update }
 };
 
 const game = new Phaser.Game(config);
@@ -89,6 +68,9 @@ const game = new Phaser.Game(config);
 let player;
 let npcs = [];
 let lastPlayerDir = "down";
+
+// Server position is stored separately — the sprite lerps toward this
+let thiefTarget = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
 
 // ─── Phaser lifecycle ─────────────────────────────────────────────────────────
 
@@ -107,21 +89,18 @@ function preload() {
 }
 
 function create() {
-  // ── Background map (static, behind everything) ──
-  // Anchored at top-left (0, 0), drawn at natural pixel size
   this.add.image(0, 0, "map").setOrigin(0, 0).setDepth(-1);
 
-  // Register animations for all character types
   createCharacterAnimations(this, "thief");
   createCharacterAnimations(this, "npc");
 
-  // ── Thief (server-controlled) ──
+  // ── Thief ──
   player = this.add.sprite(MAP_WIDTH / 2, MAP_HEIGHT / 2, "thief");
   player.setScale(SPRITE_SCALE);
   playIdleAnim(player, "thief", lastPlayerDir);
 
-  // ── NPC crowd ──
-  for (let i = 0; i < 20; i++) {
+  // ── NPCs Spawning ──
+  for (let i = 0; i < NPC_COUNT; i++) {
     const npc = this.add.sprite(
       Phaser.Math.Between(100, MAP_WIDTH  - 100),
       Phaser.Math.Between(100, MAP_HEIGHT - 100),
@@ -129,50 +108,70 @@ function create() {
     );
     npc.setScale(SPRITE_SCALE);
 
-    // Store velocity as a unit vector × speed (px/s).
-    // Using a random angle avoids the axis-aligned bias of random int components.
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    npc.vx      = Math.cos(angle) * NPC_SPEED;
-    npc.vy      = Math.sin(angle) * NPC_SPEED;
-    npc.lastDir = "down";
+    npc.vx       = Math.cos(angle) * NPC_SPEED;
+    npc.vy       = Math.sin(angle) * NPC_SPEED;
+    npc.lastDir  = "down";
+    npc.isIdle   = false; // whether NPC is currently stopped
+    npc.idleUntil = 0;    // timestamp (ms) when the idle period ends
 
     playWalkAnim(npc, "npc", npc.lastDir);
     npcs.push(npc);
   }
 
-  // ── Server updates → thief position + animation ──
+  // ── Server → thief target (just store, don't snap) ──
   socket.on("updateThief", (data) => {
-    const dx = data.x - player.x;
-    const dy = data.y - player.y;
-
-    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-      const dir = getDirectionFromVector(dx, dy);
-      lastPlayerDir = dir;
-      playWalkAnim(player, "thief", dir);
-    } else {
-      playIdleAnim(player, "thief", lastPlayerDir);
-    }
-
-    player.x = data.x;
-    player.y = data.y;
+    thiefTarget.x = data.x;
+    thiefTarget.y = data.y;
   });
 }
 
 function update(time, delta) {
-  // delta is milliseconds since last frame — divide by 1000 for seconds
   const dt = delta / 1000;
 
-  // Half the scaled sprite size used as the boundary margin so NPCs
-  // bounce off the edge before their center leaves the map.
+  // ── Thief: lerp toward server target ──
+  // Compute delta before moving so we can derive direction from it
+  const dx = thiefTarget.x - player.x;
+  const dy = thiefTarget.y - player.y;
+
+  const isMoving = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
+
+  if (isMoving) {
+    const dir = getDirectionFromVector(dx, dy);
+    lastPlayerDir = dir;
+    playWalkAnim(player, "thief", dir);
+  } else {
+    playIdleAnim(player, "thief", lastPlayerDir);
+  }
+
+  // Lerp: move a fraction of the remaining distance each frame
+  player.x += dx * THIEF_LERP;
+  player.y += dy * THIEF_LERP;
+
+  // ── NPCs ──
   const margin = (FRAME_WIDTH * SPRITE_SCALE) / 2;
 
   npcs.forEach(npc => {
-    // Move using delta time so speed is framerate-independent
+    if (npc.isIdle) {
+      // Check if the idle period has expired
+      if (time >= npc.idleUntil) {
+        // Resume walking in a new random direction
+        npc.isIdle = false;
+        const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+        npc.vx = Math.cos(angle) * NPC_SPEED;
+        npc.vy = Math.sin(angle) * NPC_SPEED;
+      } else {
+        // Stay idle this frame
+        playIdleAnim(npc, "npc", npc.lastDir);
+        return;
+      }
+    }
+
+    // ── Walking ──
     npc.x += npc.vx * dt;
     npc.y += npc.vy * dt;
 
-    // Bounce off map edges — reverse the relevant velocity component
-    // and nudge back inside so they don't clip through the wall
+    // Bounce off edges
     if (npc.x < margin) {
       npc.x  = margin;
       npc.vx = Math.abs(npc.vx);
@@ -189,8 +188,16 @@ function update(time, delta) {
       npc.vy = -Math.abs(npc.vy);
     }
 
-    // Randomly nudge direction (small angle offset keeps motion feeling organic)
-    if (Math.random() < 0.003) {
+    // Randomly stop and idle
+    if (Math.random() < NPC_IDLE_CHANCE) {
+      npc.isIdle   = true;
+      npc.idleUntil = time + Phaser.Math.Between(NPC_IDLE_MIN_MS, NPC_IDLE_MAX_MS);
+      playIdleAnim(npc, "npc", npc.lastDir);
+      return;
+    }
+
+    // Randomly nudge direction while walking
+    if (Math.random() < NPC_TURN_CHANCE) {
       const currentAngle = Math.atan2(npc.vy, npc.vx);
       const nudge        = Phaser.Math.FloatBetween(-Math.PI / 2, Math.PI / 2);
       const newAngle     = currentAngle + nudge;
@@ -198,15 +205,9 @@ function update(time, delta) {
       npc.vy = Math.sin(newAngle) * NPC_SPEED;
     }
 
-    // Animate
-    const isMoving = Math.abs(npc.vx) > 1 || Math.abs(npc.vy) > 1;
-    if (isMoving) {
-      const dir = getDirectionFromVector(npc.vx, npc.vy);
-      npc.lastDir = dir;
-      playWalkAnim(npc, "npc", dir);
-    } else {
-      playIdleAnim(npc, "npc", npc.lastDir);
-    }
+    const dir = getDirectionFromVector(npc.vx, npc.vy);
+    npc.lastDir = dir;
+    playWalkAnim(npc, "npc", dir);
   });
 
   depthSort();
@@ -214,20 +215,10 @@ function update(time, delta) {
 
 // ─── Animation helpers ────────────────────────────────────────────────────────
 
-/**
- * Registers all walk and idle animations for a given texture key.
- *
- * Walk:  8 directions × 34 frames (spanning 2 consecutive rows each).
- * Idle:  8 directions × 1 static frame (from the dedicated idle row).
- *
- * @param {Phaser.Scene} scene
- * @param {string} textureKey - must match a spritesheet loaded in preload()
- */
 function createCharacterAnimations(scene, textureKey) {
   WALK_DIRECTION_ORDER.forEach((dir, dirIndex) => {
     const start = dirIndex * WALK_FRAMES_PER_DIR;
     const end   = start + WALK_FRAMES_PER_DIR - 1;
-
     scene.anims.create({
       key:       `${textureKey}_walk_${dir}`,
       frames:    scene.anims.generateFrameNumbers(textureKey, { start, end }),
@@ -238,22 +229,15 @@ function createCharacterAnimations(scene, textureKey) {
 
   IDLE_DIRECTION_ORDER.forEach((dir, idleIndex) => {
     const frame = IDLE_ROW_START + idleIndex;
-
     scene.anims.create({
       key:    `${textureKey}_idle_${dir}`,
-      frames: scene.anims.generateFrameNumbers(textureKey, {
-        start: frame,
-        end:   frame
-      }),
+      frames: scene.anims.generateFrameNumbers(textureKey, { start: frame, end: frame }),
       frameRate: 1,
       repeat:    0
     });
   });
 }
 
-/**
- * Converts a movement vector (vx, vy) to the nearest of the 8 direction names.
- */
 function getDirectionFromVector(vx, vy) {
   const angleDeg = Phaser.Math.RadToDeg(Math.atan2(vy, vx));
   let index = Math.round(angleDeg / 45);
@@ -261,9 +245,6 @@ function getDirectionFromVector(vx, vy) {
   return ANGLE_TO_DIR[index % 8];
 }
 
-/**
- * Plays the walk animation, guarding against mid-cycle restarts.
- */
 function playWalkAnim(sprite, textureKey, dir) {
   const key = `${textureKey}_walk_${dir}`;
   if (sprite.anims.currentAnim?.key !== key) {
@@ -271,9 +252,6 @@ function playWalkAnim(sprite, textureKey, dir) {
   }
 }
 
-/**
- * Plays the idle (static) animation, guarding against unnecessary replays.
- */
 function playIdleAnim(sprite, textureKey, dir) {
   const key = `${textureKey}_idle_${dir}`;
   if (sprite.anims.currentAnim?.key !== key) {
@@ -281,12 +259,7 @@ function playIdleAnim(sprite, textureKey, dir) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Y-based depth sort — sprites lower on screen draw on top of those above them.
- * Map image is fixed at depth -1 so it always stays behind everything.
- */
 function depthSort() {
   [player, ...npcs].forEach(sprite => {
     sprite.depth = sprite.y;
