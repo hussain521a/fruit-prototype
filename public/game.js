@@ -6,23 +6,35 @@ const roomId = prompt("Enter room code for this game:");
 // Join room as host (to listen)
 socket.emit("joinRoom", { roomId, role: "host" });
 
+// ─── Map config ───────────────────────────────────────────────────────────────
+// Set these to your map image's natural pixel dimensions.
+// The canvas will match exactly — no stretching.
+const MAP_WIDTH  = 1280; // ← set to your map.png width in pixels
+const MAP_HEIGHT = 720;  // ← set to your map.png height in pixels
+
+// ─── Sprite scale ─────────────────────────────────────────────────────────────
+// 1.0 = natural sprite size. Lower = smaller on screen.
+// Adjust this whenever you swap maps or want to tune character size.
+const SPRITE_SCALE = 0.75;
+
 // ─── Sprite sheet config ──────────────────────────────────────────────────────
 // Adjust these if the sheet ever changes — they drive all frame math below.
-
 const FRAME_WIDTH       = 64;  // px width of a single frame
 const FRAME_HEIGHT      = 64;  // px height of a single frame
 const FRAMES_PER_ROW    = 17;  // number of columns in the sheet
 const WALK_ROWS_PER_DIR = 2;   // each direction spans this many consecutive rows
 const WALK_FRAME_RATE   = 12;  // walk animation playback speed (fps)
 
+// NPC movement speed in pixels per second (delta-time based, so framerate-independent)
+const NPC_SPEED = 80; // ← tweak this to change how fast NPCs move
+
 // Derived — no need to touch these
 const WALK_FRAMES_PER_DIR = FRAMES_PER_ROW * WALK_ROWS_PER_DIR; // 34 total walk frames per direction
 const WALK_ROW_COUNT      = 8 * WALK_ROWS_PER_DIR;               // 16 walk rows total
-const IDLE_ROW_START      = WALK_ROW_COUNT * FRAMES_PER_ROW;     // flat index where idle row begins (16 * 17 = 272)
+const IDLE_ROW_START      = WALK_ROW_COUNT * FRAMES_PER_ROW;     // flat index where idle row begins (272)
 
-// ─── Direction order for WALK rows (top → bottom, one entry per direction pair)
-// Row pairs: up=0-1, upleft=2-3, upright=4-5, downright=6-7,
-//            right=8-9, left=10-11, downleft=12-13, down=14-15
+// ─── Direction orders ─────────────────────────────────────────────────────────
+// Walk rows top → bottom
 const WALK_DIRECTION_ORDER = [
   "up",
   "upleft",
@@ -34,8 +46,7 @@ const WALK_DIRECTION_ORDER = [
   "down"
 ];
 
-// ─── Direction order for IDLE row (left → right, one frame per direction)
-// Idle row columns: right, left, up, upleft, upright, downright, downleft, down
+// Idle row left → right
 const IDLE_DIRECTION_ORDER = [
   "right",
   "left",
@@ -47,8 +58,7 @@ const IDLE_DIRECTION_ORDER = [
   "down"
 ];
 
-// ─── atan2 angle buckets → direction name (clockwise from 0° = right) ─────────
-// Used by getDirectionFromVector()
+// atan2 angle buckets → direction name (clockwise from 0° = right)
 const ANGLE_TO_DIR = [
   "right",
   "downright",
@@ -62,9 +72,10 @@ const ANGLE_TO_DIR = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 const config = {
-  type: Phaser.AUTO,
-  width: 800,
-  height: 600,
+  type:   Phaser.AUTO,
+  width:  MAP_WIDTH,
+  height: MAP_HEIGHT,
+  backgroundColor: "#000000",
   physics: { default: "arcade" },
   scene: {
     preload,
@@ -77,11 +88,13 @@ const game = new Phaser.Game(config);
 
 let player;
 let npcs = [];
-let lastPlayerDir = "down"; // remembers last facing direction for idle pose
+let lastPlayerDir = "down";
 
 // ─── Phaser lifecycle ─────────────────────────────────────────────────────────
 
 function preload() {
+  this.load.image("map", "assets/fruitmap1.png");
+
   this.load.spritesheet("thief", "assets/player.png", {
     frameWidth:  FRAME_WIDTH,
     frameHeight: FRAME_HEIGHT
@@ -94,25 +107,35 @@ function preload() {
 }
 
 function create() {
-  // Register all walk + idle animations for each character type.
-  // Any texture key that shares this sheet layout works automatically.
+  // ── Background map (static, behind everything) ──
+  // Anchored at top-left (0, 0), drawn at natural pixel size
+  this.add.image(0, 0, "map").setOrigin(0, 0).setDepth(-1);
+
+  // Register animations for all character types
   createCharacterAnimations(this, "thief");
   createCharacterAnimations(this, "npc");
 
   // ── Thief (server-controlled) ──
-  player = this.add.sprite(400, 300, "thief");
+  player = this.add.sprite(MAP_WIDTH / 2, MAP_HEIGHT / 2, "thief");
+  player.setScale(SPRITE_SCALE);
   playIdleAnim(player, "thief", lastPlayerDir);
 
   // ── NPC crowd ──
   for (let i = 0; i < 20; i++) {
     const npc = this.add.sprite(
-      Phaser.Math.Between(100, 700),
-      Phaser.Math.Between(100, 500),
+      Phaser.Math.Between(100, MAP_WIDTH  - 100),
+      Phaser.Math.Between(100, MAP_HEIGHT - 100),
       "npc"
     );
-    npc.speedX  = Phaser.Math.FloatBetween(-2, 2);
-    npc.speedY  = Phaser.Math.FloatBetween(-2, 2);
+    npc.setScale(SPRITE_SCALE);
+
+    // Store velocity as a unit vector × speed (px/s).
+    // Using a random angle avoids the axis-aligned bias of random int components.
+    const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    npc.vx      = Math.cos(angle) * NPC_SPEED;
+    npc.vy      = Math.sin(angle) * NPC_SPEED;
     npc.lastDir = "down";
+
     playWalkAnim(npc, "npc", npc.lastDir);
     npcs.push(npc);
   }
@@ -135,26 +158,54 @@ function create() {
   });
 }
 
-function update() {
+function update(time, delta) {
+  // delta is milliseconds since last frame — divide by 1000 for seconds
+  const dt = delta / 1000;
+
+  // Half the scaled sprite size used as the boundary margin so NPCs
+  // bounce off the edge before their center leaves the map.
+  const margin = (FRAME_WIDTH * SPRITE_SCALE) / 2;
+
   npcs.forEach(npc => {
-    npc.x += npc.speedX;
-    npc.y += npc.speedY;
+    // Move using delta time so speed is framerate-independent
+    npc.x += npc.vx * dt;
+    npc.y += npc.vy * dt;
 
-    npc.x = Phaser.Math.Clamp(npc.x, 0, 800);
-    npc.y = Phaser.Math.Clamp(npc.y, 0, 600);
+    // Bounce off map edges — reverse the relevant velocity component
+    // and nudge back inside so they don't clip through the wall
+    if (npc.x < margin) {
+      npc.x  = margin;
+      npc.vx = Math.abs(npc.vx);
+    } else if (npc.x > MAP_WIDTH - margin) {
+      npc.x  = MAP_WIDTH - margin;
+      npc.vx = -Math.abs(npc.vx);
+    }
 
-    const isMoving = Math.abs(npc.speedX) > 0.1 || Math.abs(npc.speedY) > 0.1;
+    if (npc.y < margin) {
+      npc.y  = margin;
+      npc.vy = Math.abs(npc.vy);
+    } else if (npc.y > MAP_HEIGHT - margin) {
+      npc.y  = MAP_HEIGHT - margin;
+      npc.vy = -Math.abs(npc.vy);
+    }
+
+    // Randomly nudge direction (small angle offset keeps motion feeling organic)
+    if (Math.random() < 0.003) {
+      const currentAngle = Math.atan2(npc.vy, npc.vx);
+      const nudge        = Phaser.Math.FloatBetween(-Math.PI / 2, Math.PI / 2);
+      const newAngle     = currentAngle + nudge;
+      npc.vx = Math.cos(newAngle) * NPC_SPEED;
+      npc.vy = Math.sin(newAngle) * NPC_SPEED;
+    }
+
+    // Animate
+    const isMoving = Math.abs(npc.vx) > 1 || Math.abs(npc.vy) > 1;
     if (isMoving) {
-      const dir = getDirectionFromVector(npc.speedX, npc.speedY);
+      const dir = getDirectionFromVector(npc.vx, npc.vy);
       npc.lastDir = dir;
       playWalkAnim(npc, "npc", dir);
     } else {
       playIdleAnim(npc, "npc", npc.lastDir);
-    }
-
-    if (Math.random() < 0.003) {
-      npc.speedX = Phaser.Math.FloatBetween(-2, 2);
-      npc.speedY = Phaser.Math.FloatBetween(-2, 2);
     }
   });
 
@@ -169,17 +220,10 @@ function update() {
  * Walk:  8 directions × 34 frames (spanning 2 consecutive rows each).
  * Idle:  8 directions × 1 static frame (from the dedicated idle row).
  *
- * Animation keys follow the pattern:  `${textureKey}_walk_${dir}`
- *                                     `${textureKey}_idle_${dir}`
- *
  * @param {Phaser.Scene} scene
  * @param {string} textureKey - must match a spritesheet loaded in preload()
  */
 function createCharacterAnimations(scene, textureKey) {
-
-  // ── Walk animations ──
-  // Each direction occupies WALK_FRAMES_PER_DIR (34) consecutive flat frames,
-  // naturally spanning 2 rows of 17 because Phaser reads sheets left→right, top→bottom.
   WALK_DIRECTION_ORDER.forEach((dir, dirIndex) => {
     const start = dirIndex * WALK_FRAMES_PER_DIR;
     const end   = start + WALK_FRAMES_PER_DIR - 1;
@@ -192,9 +236,6 @@ function createCharacterAnimations(scene, textureKey) {
     });
   });
 
-  // ── Idle animations ──
-  // Each is a single static frame from the dedicated idle row (row 16).
-  // IDLE_ROW_START = 272 (16 rows × 17 frames), then offset by column index.
   IDLE_DIRECTION_ORDER.forEach((dir, idleIndex) => {
     const frame = IDLE_ROW_START + idleIndex;
 
@@ -212,25 +253,16 @@ function createCharacterAnimations(scene, textureKey) {
 
 /**
  * Converts a movement vector (vx, vy) to the nearest of the 8 direction names.
- *
- * @param {number} vx
- * @param {number} vy
- * @returns {string}  e.g. "upright", "downleft", "left"
  */
 function getDirectionFromVector(vx, vy) {
-  const angleDeg = Phaser.Math.RadToDeg(Math.atan2(vy, vx)); // -180 → 180
+  const angleDeg = Phaser.Math.RadToDeg(Math.atan2(vy, vx));
   let index = Math.round(angleDeg / 45);
   if (index < 0) index += 8;
   return ANGLE_TO_DIR[index % 8];
 }
 
 /**
- * Plays the walk animation for a sprite.
- * Guards against restarting the same animation mid-cycle.
- *
- * @param {Phaser.GameObjects.Sprite} sprite
- * @param {string} textureKey
- * @param {string} dir
+ * Plays the walk animation, guarding against mid-cycle restarts.
  */
 function playWalkAnim(sprite, textureKey, dir) {
   const key = `${textureKey}_walk_${dir}`;
@@ -240,12 +272,7 @@ function playWalkAnim(sprite, textureKey, dir) {
 }
 
 /**
- * Plays the idle (static) animation for a sprite.
- * Guards against flickering by skipping if already on the correct idle frame.
- *
- * @param {Phaser.GameObjects.Sprite} sprite
- * @param {string} textureKey
- * @param {string} dir
+ * Plays the idle (static) animation, guarding against unnecessary replays.
  */
 function playIdleAnim(sprite, textureKey, dir) {
   const key = `${textureKey}_idle_${dir}`;
@@ -257,8 +284,8 @@ function playIdleAnim(sprite, textureKey, dir) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Y-based depth sort — sprites lower on screen draw on top of those above them,
- * creating the 2.5D overlap illusion.
+ * Y-based depth sort — sprites lower on screen draw on top of those above them.
+ * Map image is fixed at depth -1 so it always stays behind everything.
  */
 function depthSort() {
   [player, ...npcs].forEach(sprite => {
