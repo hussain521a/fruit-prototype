@@ -91,6 +91,8 @@ io.on("connection", (socket) => {
 			//If the disconnect is from thief, remove the thief
 			if (room.thiefSocket === socket.id) {
 				room.thiefSocket = null;
+				console.log("user disconnected from room ", roomId, "thief left");
+
 			}
 
 			//Replaces players with new list by filtering out the id of the one that disconnected
